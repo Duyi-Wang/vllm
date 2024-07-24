@@ -331,6 +331,8 @@ class Scheduler:
                                        else 0)
         self.num_cumulative_preemption: int = 0
 
+        self.enabled_random_shuffle = os.environ.get("XFT_VLLM_SHUFFLE", "1") == "1"
+
     @property
     def lora_enabled(self) -> bool:
         return bool(self.lora_config)
@@ -838,10 +840,11 @@ class Scheduler:
         # doesn't allow chunked prefills.
         assert len(running_scheduled.prefill_seq_groups) == 0
         assert len(swapped_in.prefill_seq_groups) == 0
+        scheduled_seq_groups_list = prefills.seq_groups + running_scheduled.decode_seq_groups + swapped_in.decode_seq_groups
+        if self.enabled_random_shuffle:
+            random.shuffle(scheduled_seq_groups_list)
         return SchedulerOutputs(
-            scheduled_seq_groups=(prefills.seq_groups +
-                                  running_scheduled.decode_seq_groups +
-                                  swapped_in.decode_seq_groups),
+            scheduled_seq_groups=scheduled_seq_groups_list,
             num_prefill_groups=len(prefills.seq_groups),
             num_batched_tokens=budget.num_batched_tokens,
             blocks_to_swap_in=swapped_in.blocks_to_swap_in,
