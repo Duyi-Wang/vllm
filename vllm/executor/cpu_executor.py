@@ -22,8 +22,9 @@ class CPUExecutor(ExecutorBase):
     def _init_executor(self) -> None:
         assert self.device_config.device_type == "cpu"
         assert self.lora_config is None, "cpu backend doesn't support LoRA"
-        self.model_config = _verify_and_get_model_config(self.model_config)
-        self.cache_config = _verify_and_get_cache_config(self.cache_config)
+        # self.model_config = _verify_and_get_model_config(self.model_config)
+        # self.cache_config = _verify_and_get_cache_config(self.cache_config)
+        self.cache_config.enable_prefix_caching = False
         self.scheduler_config = _verify_and_get_scheduler_config(
             self.scheduler_config)
 
@@ -54,7 +55,7 @@ class CPUExecutor(ExecutorBase):
             prompt_adapter_config=self.prompt_adapter_config,
             is_driver_worker=True,
         )
-        self.driver_worker.init_device()
+        # self.driver_worker.init_device()
         self.driver_worker.load_model()
 
     def determine_num_available_blocks(self) -> Tuple[int, int]:
@@ -111,6 +112,9 @@ class CPUExecutor(ExecutorBase):
         # CPUExecutor will always be healthy as long as
         # it's running.
         return
+    
+    def free_xft_cache(self, xft_seq_ids:List[int]) -> bool:
+        return self.driver_worker.free_xft_cache(xft_seq_ids)
 
 
 class CPUExecutorAsync(CPUExecutor, ExecutorAsyncBase):

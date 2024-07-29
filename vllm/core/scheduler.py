@@ -282,24 +282,25 @@ class Scheduler:
         if self.scheduler_config.embedding_mode:
             version = "embedding"
 
-        BlockSpaceManagerImpl = BlockSpaceManager.get_block_space_manager_class(
-            version)
+        # BlockSpaceManagerImpl = BlockSpaceManager.get_block_space_manager_class(
+        #     version)
 
-        num_gpu_blocks = cache_config.num_gpu_blocks
-        if num_gpu_blocks:
-            num_gpu_blocks //= pipeline_parallel_size
+        # num_gpu_blocks = cache_config.num_gpu_blocks
+        # if num_gpu_blocks:
+        #     num_gpu_blocks //= pipeline_parallel_size
 
-        num_cpu_blocks = cache_config.num_cpu_blocks
-        if num_cpu_blocks:
-            num_cpu_blocks //= pipeline_parallel_size
+        # num_cpu_blocks = cache_config.num_cpu_blocks
+        # if num_cpu_blocks:
+        #     num_cpu_blocks //= pipeline_parallel_size
 
-        # Create the block space manager.
-        self.block_manager = BlockSpaceManagerImpl(
-            block_size=self.cache_config.block_size,
-            num_gpu_blocks=num_gpu_blocks,
-            num_cpu_blocks=num_cpu_blocks,
-            sliding_window=self.cache_config.sliding_window,
-            enable_caching=self.cache_config.enable_prefix_caching)
+        # # Create the block space manager.
+        # self.block_manager = BlockSpaceManagerImpl(
+        #     block_size=self.cache_config.block_size,
+        #     num_gpu_blocks=num_gpu_blocks,
+        #     num_cpu_blocks=num_cpu_blocks,
+        #     sliding_window=self.cache_config.sliding_window,
+        #     enable_caching=self.cache_config.enable_prefix_caching)
+        self.block_manager = None
 
         # Sequence groups in the WAITING state.
         # Contain new prefill or preempted requests.
@@ -480,7 +481,7 @@ class Scheduler:
                         swapped_out.append(seq_group)
                     break
             else:
-                self._append_slots(seq_group, blocks_to_copy)
+                # self._append_slots(seq_group, blocks_to_copy)
                 is_prefill = seq_group.is_prefill()
                 if is_prefill:
                     prefill_seq_groups.append(
@@ -558,9 +559,10 @@ class Scheduler:
             seq_group = swapped_queue[0]
 
             # If the sequence group cannot be swapped in, stop.
-            is_prefill = seq_group.is_prefill()
-            alloc_status = self.block_manager.can_swap_in(
-                seq_group, self._get_num_lookahead_slots(is_prefill))
+            # is_prefill = seq_group.is_prefill()
+            # alloc_status = self.block_manager.can_swap_in(
+            #     seq_group, self._get_num_lookahead_slots(is_prefill))
+            alloc_status = AllocStatus.OK
             if alloc_status == AllocStatus.LATER:
                 break
             elif alloc_status == AllocStatus.NEVER:
@@ -708,7 +710,8 @@ class Scheduler:
                 continue
 
             # If the sequence group cannot be allocated, stop.
-            can_allocate = self.block_manager.can_allocate(seq_group)
+            # can_allocate = self.block_manager.can_allocate(seq_group)
+            can_allocate = AllocStatus.OK
             if can_allocate == AllocStatus.LATER:
                 break
             elif can_allocate == AllocStatus.NEVER:
@@ -950,6 +953,7 @@ class Scheduler:
 
     def _schedule(self) -> SchedulerOutputs:
         """Schedule queued requests."""
+        return self._schedule_default()
         if self.scheduler_config.chunked_prefill_enabled:
             return self._schedule_chunked_prefill()
         else:
@@ -959,6 +963,7 @@ class Scheduler:
         """Determine whether or not we have enough space in the KV cache to
         continue generation of the sequence group.
         """
+        return True
         # It is True only for testing case to trigger artificial preemption.
         if (self.enable_artificial_preemption
                 and random.uniform(0, 1) < ARTIFICIAL_PREEMPTION_PROB
@@ -997,15 +1002,16 @@ class Scheduler:
             for seq in seq_group.get_seqs(status=SequenceStatus.RUNNING):
                 seq_id = seq.seq_id
                 seq_data[seq_id] = seq.data
-                block_tables[seq_id] = self.block_manager.get_block_table(seq)
-                self.block_manager.access_all_blocks_in_seq(seq, now)
+                # block_tables[seq_id] = self.block_manager.get_block_table(seq)
+                # self.block_manager.access_all_blocks_in_seq(seq, now)
 
-            common_computed_block_nums = (
-                self.block_manager.get_common_computed_block_ids(
-                    seq_group.get_seqs(status=SequenceStatus.RUNNING)))
+            # common_computed_block_nums = (
+            #     self.block_manager.get_common_computed_block_ids(
+            #         seq_group.get_seqs(status=SequenceStatus.RUNNING)))
+            common_computed_block_nums = 0
 
             do_sample = True
-            if seq_group.is_prefill():
+            if seq_group.is_prefill() and False:
                 seqs = seq_group.get_seqs()
                 # Prefill has only 1 sequence.
                 assert len(seqs) == 1
@@ -1048,19 +1054,28 @@ class Scheduler:
         # This is because the engine assumes that a failure in model execution
         # will crash the vLLM instance / will not retry.
         for scheduled_seq_group in scheduler_outputs.scheduled_seq_groups:
+            break
             self.block_manager.mark_blocks_as_computed(
                 scheduled_seq_group.seq_group)
 
         return seq_group_metadata_list, scheduler_outputs
 
     def fork_seq(self, parent_seq: Sequence, child_seq: Sequence) -> None:
+        return
         self.block_manager.fork(parent_seq, child_seq)
 
     def free_seq(self, seq: Sequence) -> None:
         """Free a sequence from a block table."""
+        return
         self.block_manager.free(seq)
 
-    def free_finished_seq_groups(self) -> None:
+    def free_finished_seq_groups(self) -> List[int]:
+        free_xft_seq_ids = []
+        for seq_group in self.running:
+            if seq_group.is_finished():
+                for seq in seq_group.seqs_dict.values():
+                    free_xft_seq_ids.append(seq.data.xft_ids)
+
         for queue in [self.running, self.swapped, self.waiting]:
             self._finished_requests_ids += [
                 seq_group.request_id for seq_group in queue
@@ -1068,9 +1083,10 @@ class Scheduler:
             ]
         self.running = deque(seq_group for seq_group in self.running
                              if not seq_group.is_finished())
+        return free_xft_seq_ids
 
     def _allocate_and_set_running(self, seq_group: SequenceGroup) -> None:
-        self.block_manager.allocate(seq_group)
+        # self.block_manager.allocate(seq_group)
         for seq in seq_group.get_seqs(status=SequenceStatus.WAITING):
             seq.status = SequenceStatus.RUNNING
 

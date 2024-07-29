@@ -129,6 +129,10 @@ class ExecutorBase(ABC):
 
     def __del__(self):
         self.shutdown()
+        
+    def free_xft_cache(self, xft_seq_ids:List[int]) -> bool:
+       return False
+
 
 
 class ExecutorAsyncBase(ExecutorBase):

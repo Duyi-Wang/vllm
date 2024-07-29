@@ -395,7 +395,10 @@ class AsyncLLMEngine:
             cls, engine_config: EngineConfig) -> Type[ExecutorAsyncBase]:
         distributed_executor_backend = (
             engine_config.parallel_config.distributed_executor_backend)
-        if isinstance(distributed_executor_backend, type):
+        if True:
+            from vllm.executor.cpu_executor import CPUExecutorAsync
+            executor_class = CPUExecutorAsync
+        elif isinstance(distributed_executor_backend, type):
             if not issubclass(distributed_executor_backend, ExecutorAsyncBase):
                 raise TypeError(
                     "distributed_executor_backend must be a subclass of "
@@ -528,6 +531,7 @@ class AsyncLLMEngine:
 
     def _init_engine(self, *args,
                      **kwargs) -> Union[_AsyncLLMEngine, "ray.ObjectRef"]:
+        return self._engine_class(*args, **kwargs)
         if not self.engine_use_ray:
             engine_class = self._engine_class
         elif self.worker_use_ray:

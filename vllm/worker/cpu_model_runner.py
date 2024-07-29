@@ -27,6 +27,9 @@ from vllm.worker.model_runner_base import (
 if TYPE_CHECKING:
     from vllm.attention.backends.abstract import AttentionBackend
 
+from vllm.model_executor.layers.sampler import Sampler
+import xfastertransformer
+
 logger = init_logger(__name__)
 
 _PAD_SLOT_ID = -1
@@ -80,7 +83,7 @@ class CPUModelRunner(ModelRunnerBase[CPUModelInput]):
         load_config: LoadConfig,
         lora_config: Optional[LoRAConfig],
         multimodal_config: Optional[MultiModalConfig],
-        kv_cache_dtype: Optional[str] = "auto",
+        kv_cache_dtype: Optional[str] = "fp16",
         prompt_adapter_config: Optional[PromptAdapterConfig] = None,
         is_driver_worker: bool = False,
         *args,
@@ -119,25 +122,30 @@ class CPUModelRunner(ModelRunnerBase[CPUModelInput]):
             .create_input_mapper(self.model_config)
 
         # Lazy initialization.
-        self.model: nn.Module  # Set after init_Model
+        self.model: xfastertransformer.AutoModel  # Set after init_Model
 
     def load_model(self) -> None:
-        self.model = get_model(model_config=self.model_config,
-                               load_config=self.load_config,
-                               device_config=self.device_config,
-                               multimodal_config=self.multimodal_config,
-                               lora_config=self.lora_config,
-                               parallel_config=self.parallel_config,
-                               scheduler_config=self.scheduler_config,
-                               cache_config=self.cache_config)
+        # self.model = get_model(model_config=self.model_config,
+        #                        load_config=self.load_config,
+        #                        device_config=self.device_config,
+        #                        multimodal_config=self.multimodal_config,
+        #                        lora_config=self.lora_config,
+        #                        parallel_config=self.parallel_config,
+        #                        scheduler_config=self.scheduler_config,
+        #                        cache_config=self.cache_config)
+        logger.info(f"Loading xft model {self.model_config.model}, dtype = {self.model_config.dtype}, KV cache dtype = {self.kv_cache_dtype}")
+        self.model = xfastertransformer.AutoModel.from_pretrained(
+            self.model_config.model, self.model_config.dtype, self.kv_cache_dtype
+        )
+        self.sampler = Sampler()
 
     def _prepare_prompt(
         self,
         seq_group_metadata_list: List[SequenceGroupMetadata],
-    ) -> Tuple[torch.Tensor, torch.Tensor, AttentionMetadata, List[int],
+    ) -> Tuple[List[List[int]], torch.Tensor, AttentionMetadata, List[int],
                Mapping[str, BatchedTensors]]:
         assert len(seq_group_metadata_list) > 0
-        input_tokens: List[int] = []
+        input_tokens = []
         input_positions: List[int] = []
         slot_mapping: List[int] = []
         seq_lens: List[int] = []
@@ -155,7 +163,7 @@ class CPUModelRunner(ModelRunnerBase[CPUModelInput]):
             seq_len = len(prompt_tokens)
 
             seq_lens.append(seq_len)  # Prompt token num
-            input_tokens.extend(prompt_tokens)  # Token ids
+            input_tokens.append(prompt_tokens)  # Token ids
 
             # Token position ids
             # NOTE(woosuk): Here we assume that the first token in the prompt
@@ -168,32 +176,32 @@ class CPUModelRunner(ModelRunnerBase[CPUModelInput]):
                 multi_modal_inputs_list.append(mm_kwargs)
 
             # Compute the slot mapping.
-            block_table = seq_group_metadata.block_tables[seq_id]
+            # block_table = seq_group_metadata.block_tables[seq_id]
             # Mask the [0, start_idx) tokens of the prompt with _PAD_SLOT_ID,
             # where start_idx is max(0, seq_len - sliding_window).
             # For example, if the prompt len is 10, sliding window is 8, and
             # block size is 4, the first two tokens are masked and the slot
             # mapping will be [-1, -1, 2, 3, 4, 5, 6, 7, 0, 1].
-            start_idx = 0
-            if self.sliding_window is not None:
-                start_idx = max(0, seq_len - self.sliding_window)
+            # start_idx = 0
+            # if self.sliding_window is not None:
+            #     start_idx = max(0, seq_len - self.sliding_window)
 
-            for i in range(computed_len, seq_len):
-                if i < start_idx:
-                    slot_mapping.append(_PAD_SLOT_ID)
-                    continue
+            # for i in range(computed_len, seq_len):
+            #     if i < start_idx:
+            #         slot_mapping.append(_PAD_SLOT_ID)
+            #         continue
 
-                block_number = block_table[i //
-                                           self.block_size]  # type: ignore
-                block_offset = i % self.block_size  # type: ignore
-                slot = block_number * self.block_size + block_offset
-                slot_mapping.append(slot)
+            #     block_number = block_table[i //
+            #                                self.block_size]  # type: ignore
+            #     block_offset = i % self.block_size  # type: ignore
+            #     slot = block_number * self.block_size + block_offset
+            #     slot_mapping.append(slot)
 
         num_prompt_tokens = len(input_tokens)
 
-        input_tokens = torch.tensor(input_tokens,
-                                    dtype=torch.long,
-                                    device=self.device)  # type: ignore
+        # input_tokens = torch.tensor(input_tokens,
+        #                             dtype=torch.long,
+        #                             device=self.device)  # type: ignore
         input_positions = torch.tensor(input_positions,
                                        dtype=torch.long,
                                        device=self.device)  # type: ignore
@@ -222,13 +230,14 @@ class CPUModelRunner(ModelRunnerBase[CPUModelInput]):
     def _prepare_decode(
         self,
         seq_group_metadata_list: List[SequenceGroupMetadata],
-    ) -> Tuple[torch.Tensor, torch.Tensor, AttentionMetadata]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, List[int], AttentionMetadata]:
         assert len(seq_group_metadata_list) > 0
         input_tokens: List[int] = []
         input_positions: List[int] = []
         slot_mapping: List[int] = []
         seq_lens: List[int] = []
         block_tables: List[List[int]] = []
+        xft_seq_ids: List[int] = []
 
         for seq_group_metadata in seq_group_metadata_list:
             assert not seq_group_metadata.is_prompt
@@ -240,6 +249,7 @@ class CPUModelRunner(ModelRunnerBase[CPUModelInput]):
                 seq_data = seq_group_metadata.seq_data[seq_id]
                 generation_token = seq_data.get_last_token_id()
                 input_tokens.append(generation_token)
+                xft_seq_ids.append(seq_data.xft_ids)
 
                 seq_len = seq_data.get_len()
                 position = seq_len - 1
@@ -249,23 +259,23 @@ class CPUModelRunner(ModelRunnerBase[CPUModelInput]):
                     seq_len, self.sliding_window)
                 seq_lens.append(seq_len)
 
-                block_table = seq_group_metadata.block_tables[seq_id]
-                block_number = block_table[position // self.block_size]
-                block_offset = position % self.block_size
-                slot = block_number * self.block_size + block_offset
-                slot_mapping.append(slot)
+                # block_table = seq_group_metadata.block_tables[seq_id]
+                # block_number = block_table[position // self.block_size]
+                # block_offset = position % self.block_size
+                # slot = block_number * self.block_size + block_offset
+                # slot_mapping.append(slot)
 
-                if self.sliding_window is not None:
-                    sliding_window_blocks = (self.sliding_window //
-                                             self.block_size)
-                    block_table = block_table[-sliding_window_blocks:]
-                block_tables.append(block_table)
+                # if self.sliding_window is not None:
+                #     sliding_window_blocks = (self.sliding_window //
+                #                              self.block_size)
+                #     block_table = block_table[-sliding_window_blocks:]
+                # block_tables.append(block_table)
 
         max_decode_seq_len = max(seq_lens)
 
         input_tokens = torch.tensor(input_tokens,
                                     dtype=torch.long,
-                                    device=self.device)
+                                    device=self.device).unsqueeze(1)
         input_positions = torch.tensor(input_positions,
                                        dtype=torch.long,
                                        device=self.device)
@@ -276,12 +286,12 @@ class CPUModelRunner(ModelRunnerBase[CPUModelInput]):
                                        dtype=torch.int,
                                        device=self.device)
 
-        block_tables = make_tensor_with_pad(
-            block_tables,
-            pad=0,
-            dtype=torch.int,
-            device=self.device,
-        )
+        # block_tables = make_tensor_with_pad(
+        #     block_tables,
+        #     pad=0,
+        #     dtype=torch.int,
+        #     device=self.device,
+        # )
 
         attn_metadata = self.attn_backend.make_metadata(
             is_prompt=False,
@@ -292,11 +302,12 @@ class CPUModelRunner(ModelRunnerBase[CPUModelInput]):
             num_prefill_tokens=0,
             num_decode_tokens=len(input_tokens),
             num_prefills=0,
-            block_tables=block_tables,
+            block_tables=torch.tensor([]),
         )
         return (
             input_tokens,
             input_positions,
+            xft_seq_ids,
             attn_metadata,
         )
 
@@ -316,6 +327,9 @@ class CPUModelRunner(ModelRunnerBase[CPUModelInput]):
             finished_requests_ids: Optional[List[str]] = None
     ) -> CPUModelInput:
         multi_modal_kwargs = None
+        # xft_seq_ids is None for prompts and xft_max_lens is None for decodes
+        xft_seq_ids = None
+        xft_max_lens = None
         # NOTE: We assume that all sequences in the group are all prompts or
         # all decodes.
         is_prompt = seq_group_metadata_list[0].is_prompt
@@ -325,7 +339,7 @@ class CPUModelRunner(ModelRunnerBase[CPUModelInput]):
              multi_modal_kwargs
              ) = self._prepare_prompt(seq_group_metadata_list)
         else:
-            (input_tokens, input_positions,
+            (input_tokens, input_positions, xft_seq_ids,
              attn_metadata) = self._prepare_decode(seq_group_metadata_list)
             seq_lens = []
         sampling_metadata = SamplingMetadata.prepare(
@@ -337,6 +351,19 @@ class CPUModelRunner(ModelRunnerBase[CPUModelInput]):
             seq_lens,
             self.device,
             pin_memory=False)
+
+        if is_prompt:
+            xft_max_lens = []
+            for i in range(len(sampling_metadata.seq_groups)):
+                xft_max_lens.append(sampling_metadata.seq_groups[i].sampling_params.max_tokens + seq_lens[i])
+                
+        xft_seq_ids = self.model.set_input_cb(input_tokens, xft_seq_ids, xft_max_lens).tolist()
+
+        if sampling_metadata.seq_groups[0].is_prompt:
+            for i in range(len(xft_seq_ids)):
+                seq_id = list(seq_group_metadata_list[i].seq_data.keys())[0]
+                seq_group_metadata_list[i].seq_data[seq_id].xft_ids = xft_seq_ids[i]
+
         return CPUModelInput(
             input_tokens=input_tokens,
             input_positions=input_positions,
@@ -345,11 +372,11 @@ class CPUModelRunner(ModelRunnerBase[CPUModelInput]):
             multi_modal_kwargs=multi_modal_kwargs,
         )
 
-    @torch.inference_mode()
+    # @torch.inference_mode()
     def execute_model(
         self,
         model_input: CPUModelInput,
-        kv_caches: List[torch.Tensor],
+        kv_caches: Optional[torch.Tensor],
         intermediate_tensors: Optional[IntermediateTensors] = None,
         num_steps: int = 1,
     ) -> Optional[List[SamplerOutput]]:
@@ -357,28 +384,21 @@ class CPUModelRunner(ModelRunnerBase[CPUModelInput]):
             raise ValueError(
                 "CPU worker does not support multi-step execution.")
 
-        model_executable = self.model
-        execute_model_kwargs = {
-            "input_ids": model_input.input_tokens,
-            "positions": model_input.input_positions,
-            "kv_caches": kv_caches,
-            "attn_metadata": model_input.attn_metadata,
-            **(model_input.multi_modal_kwargs or {}),
-        }
-
-        hidden_states = model_executable(**execute_model_kwargs)
-
         # Compute the logits.
-        logits = self.model.compute_logits(hidden_states,
-                                           model_input.sampling_metadata)
+        logits = self.model.forward_cb()
 
         # Only perform sampling in the driver worker.
         if not self.is_driver_worker:
             return []
 
         # Sample the next token.
-        output = self.model.sample(
+        output = self.sampler(
             logits=logits,
             sampling_metadata=model_input.sampling_metadata,
         )
         return [output]
+
+    def free_xft_cache(self, xft_seq_ids:List[int]) -> bool:
+        return self.model.free_seqs(
+            torch.tensor(xft_seq_ids, dtype=torch.long, device=self.device)
+        )

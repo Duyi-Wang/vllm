@@ -128,6 +128,7 @@ class SequenceData:
         # The number of tokens that are computed (that run against the model).
         self._num_computed_tokens = 0
         self._stage: SequenceStage = SequenceStage.PREFILL
+        self.xft_ids = -1
 
         self._update_cached_all_tokens()
 

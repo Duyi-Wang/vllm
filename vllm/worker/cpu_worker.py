@@ -17,6 +17,8 @@ from vllm.utils import STR_DTYPE_TO_TORCH_DTYPE, init_kmp_env
 from vllm.worker.cpu_model_runner import CPUModelRunner
 from vllm.worker.worker_base import (LocalOrDistributedWorkerBase,
                                      LoraNotSupportedWorkerBase, WorkerInput)
+from vllm.sequence import SamplerOutput
+from vllm.worker.model_runner_base import ModelRunnerInputBase
 
 logger = init_logger(__name__)
 
@@ -153,7 +155,8 @@ class CPUWorker(LoraNotSupportedWorkerBase, LocalOrDistributedWorkerBase):
             assert self.rank == 0, "The driver worker must have rank 0."
 
         # try to initialize intel openmp optimized tunings
-        init_kmp_env()
+        # xFT: Disabled due to observed performance degradation.
+        # init_kmp_env()
 
         if self.model_config.trust_remote_code:
             # note: lazy import to avoid importing torch before initializing
@@ -291,17 +294,44 @@ class CPUWorker(LoraNotSupportedWorkerBase, LocalOrDistributedWorkerBase):
         assert execute_model_req is not None
         virtual_engine = execute_model_req.virtual_engine
         num_seq_groups: int = len(execute_model_req.seq_group_metadata_list)
-        blocks_to_copy = execute_model_req.blocks_to_copy
-        blocks_to_copy = torch.tensor(execute_model_req.blocks_to_copy,
-                                      device="cpu",
-                                      dtype=torch.int64).view(-1, 2)
+        # blocks_to_copy = execute_model_req.blocks_to_copy
+        # blocks_to_copy = torch.tensor(execute_model_req.blocks_to_copy,
+        #                               device="cpu",
+        #                               dtype=torch.int64).view(-1, 2)
         assert len(execute_model_req.blocks_to_swap_in) == 0
         assert len(execute_model_req.blocks_to_swap_out) == 0
         return WorkerInput(
             num_seq_groups=num_seq_groups,
-            blocks_to_copy=blocks_to_copy,
+            blocks_to_copy=None,
             virtual_engine=virtual_engine,
         )
+
+    def execute_model(
+        self,
+        execute_model_req: Optional[ExecuteModelRequest] = None
+    ) -> Optional[List[SamplerOutput]]:
+        """Executes at least one model step on the given sequences, unless no
+        sequences are provided."""
+        if self.is_driver_worker or True:
+            worker_input: WorkerInput = self.prepare_worker_input(
+                execute_model_req=execute_model_req)
+            model_input: ModelRunnerInputBase = (
+                self.model_runner.prepare_model_input(
+                    execute_model_req.seq_group_metadata_list,
+                    execute_model_req.virtual_engine,
+                    execute_model_req.finished_requests_ids))
+            num_steps = execute_model_req.num_steps
+
+        # If there is no input, we don't need to execute the model.
+        if worker_input.num_seq_groups == 0:
+            return []
+
+        intermediate_tensors = None
+
+        output = self.model_runner.execute_model(model_input, None, intermediate_tensors, num_steps)
+
+        # output is List[SamplerOutput]
+        return output
 
     def init_distributed_environment(self) -> None:
         """Initialize the distributed environment."""
@@ -329,3 +359,6 @@ class CPUWorker(LoraNotSupportedWorkerBase, LocalOrDistributedWorkerBase):
         return CPUCacheEngine.get_cache_block_size(
             self.cache_config.block_size, self.cache_config.cache_dtype,
             self.model_config, self.parallel_config)
+
+    def free_xft_cache(self, xft_seq_ids:List[int]) -> bool:
+        return self.model_runner.free_xft_cache(xft_seq_ids)

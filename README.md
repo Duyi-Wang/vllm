@@ -1,3 +1,76 @@
+This is a fork of vLLM to support xfastertransformer backend. This version is based on official vllm `v0.4.2`.
+## Notice
+🎉🎉🎉***Continuous batching and distributed is supported.***  🎇🎇🎇
+- BeamSearch is not support yet.(WIP)
+- LORA is not support yet.(WIP)
+
+## Install
+### From PyPI
+`pip install vllm-xft`
+
+### From Source
+`python3 setup.py bdist_wheel --verbose`
+
+## Usage
+### Python offline
+```
+python examples/offline_inference_xfastertransformer.py
+```
+### Serving(OpenAI Compatible Server)
+```shell
+python -m vllm.entrypoints.openai.api_server \
+        --model /data/llama-2-7b-chat-cpu \
+        --tokenizer /data/llama-2-7b-chat-hf \
+        --dtype fp16 \
+        --kv-cache-dtype fp16 \
+        --served-model-name xft \
+        --port 8000 \
+        --trust-remote-code \
+```
+- `--max-num-batched-tokens`: max batched token, default value is max(MAX_SEQ_LEN_OF_MODEL, 2048).
+- `--max-num-seqs`: max seqs batch, default is 256.  
+
+More Arguments please refer to [vllm official docs](https://docs.vllm.ai/en/latest/models/engine_args.html)  
+
+### Query example
+```shell
+  curl http://localhost:8000/v1/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+  "model": "xft",
+  "prompt": "San Francisco is a",
+  "max_tokens": 512,
+  "temperature": 0
+  }'
+```
+
+## Distributed(Multi-rank)
+Use oneCCL's `mpirun` to run the workload. The master (`rank 0`) is the same as the single-rank above, and the slaves (`rank > 0`) should use the following command:
+```bash
+python -m vllm.entrypoints.slave --dtype fp16 --model ${MODEL_PATH} --kv-cache-dtype fp16
+```
+Please keep params of slaves align with master.
+
+### Serving(OpenAI Compatible Server)
+Here is a example on 2Socket platform, 48 cores pre socket.
+```bash
+OMP_NUM_THREADS=48 mpirun \
+        -n 1 numactl --all -C 0-47 -m 0 \
+          python -m vllm.entrypoints.openai.api_server \
+            --model ${MODEL_PATH} \
+            --tokenizer ${TOKEN_PATH} \
+            --dtype bf16 \
+            --kv-cache-dtype fp16 \
+            --served-model-name xft \
+            --port 8000 \
+            --trust-remote-code \
+        : -n 1 numactl --all -C 48-95 -m 1 \
+          python -m vllm.entrypoints.slave \
+            --dtype bf16 \
+            --model ${MODEL_PATH} \
+            --kv-cache-dtype fp16
+```
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/vllm-project/vllm/main/docs/source/assets/logos/vllm-logo-text-dark.png">
