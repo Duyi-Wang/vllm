@@ -572,7 +572,7 @@ class CacheConfig:
     def _verify_cache_dtype(self) -> None:
         if self.cache_dtype == "auto":
             self.cache_dtype = "fp16"
-        elif self.cache_dtype in ["fp16", "int8"]:
+        elif self.cache_dtype in ["fp16", "int8", "bf16"]:
             pass
         else:
             raise ValueError(f"Unknown kv cache dtype: {self.cache_dtype}")
