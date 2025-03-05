@@ -73,7 +73,7 @@ if TYPE_CHECKING:
     VLLM_ALLOW_RUNTIME_LORA_UPDATING: bool = False
     VLLM_SKIP_P2P_CHECK: bool = False
     VLLM_DISABLED_KERNELS: List[str] = []
-    VLLM_USE_V1: bool = False
+    VLLM_USE_V1: bool = True
     VLLM_ENABLE_V1_MULTIPROCESSING: bool = True
     VLLM_LOG_BATCHSIZE_INTERVAL: float = -1
     VLLM_DISABLE_COMPILE_CACHE: bool = False
@@ -501,7 +501,7 @@ environment_variables: Dict[str, Callable[[], Any]] = {
 
     # If set, use the V1 code path.
     "VLLM_USE_V1":
-    lambda: bool(int(os.getenv("VLLM_USE_V1", "0"))),
+    lambda: bool(int(os.getenv("VLLM_USE_V1", "1"))),
 
     # Divisor for dynamic key scale factor calculation for FP8 KV Cache
     "K_SCALE_CONSTANT":

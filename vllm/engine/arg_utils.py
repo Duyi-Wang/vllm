@@ -216,8 +216,10 @@ class EngineArgs:
 
         # Override the default value of enable_prefix_caching if it's not set
         # by user.
-        if self.enable_prefix_caching is None:
-            self.enable_prefix_caching = bool(envs.VLLM_USE_V1)
+        # if self.enable_prefix_caching is None:
+        #     self.enable_prefix_caching = bool(envs.VLLM_USE_V1)
+        # Disable prefix caching since xft is not support
+        self.enable_prefix_caching = False
 
         # Override max_num_seqs if it's not set by user.
         if self.max_num_seqs is None:
