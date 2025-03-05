@@ -13,7 +13,7 @@ requires = [
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "vllm"
+name = "vllm-xft"
 authors = [{name = "vLLM Team"}]
 license = { "file"= "LICENSE" }
 readme = "README.md"
