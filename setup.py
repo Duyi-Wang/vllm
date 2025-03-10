@@ -478,6 +478,7 @@ setup(
     version=get_vllm_version(),
     author="vLLM Team",
     license="Apache 2.0",
+    license_files=["LICENSE"],
     description=("A high-throughput and memory-efficient inference and "
                  "serving engine for LLMs"),
     long_description=read_readme(),
