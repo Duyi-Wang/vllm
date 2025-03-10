@@ -19,7 +19,7 @@ from vllm.lora.request import LoRARequest
 from vllm.lora.worker_manager import LRUCacheWorkerLoRAManager
 from vllm.model_executor import SamplingMetadata
 from vllm.model_executor.layers.rotary_embedding import MRotaryEmbedding
-from vllm.model_executor.layers.sampler import SamplerOutput
+from vllm.model_executor.layers.sampler import SamplerOutput, get_sampler
 from vllm.model_executor.model_loader import get_model
 from vllm.model_executor.models import supports_lora, supports_multimodal
 from vllm.multimodal import (MULTIMODAL_REGISTRY, BatchedTensorInputs,
@@ -35,6 +35,8 @@ from vllm.worker.model_runner_base import (
 
 if TYPE_CHECKING:
     from vllm.attention.backends.abstract import AttentionBackend
+
+import xfastertransformer
 
 logger = init_logger(__name__)
 
@@ -141,6 +143,9 @@ class ModelInputForCPUBuilder(ModelRunnerInputBuilderBase[ModelInputForCPU]):
                     MultiModalPlaceholderMap)
             self.input_mrope_positions: List[List[int]] = [[]
                                                            for _ in range(3)]
+            self.xft_seq_ids: List[int] = []
+            self.xft_max_lens: List[int] = []
+            self.xft_input_tokens: List[List[int]] = []
 
     def __init__(self,
                  runner: "CPUModelRunner",
@@ -166,7 +171,7 @@ class ModelInputForCPUBuilder(ModelRunnerInputBuilderBase[ModelInputForCPU]):
         self.seq_group_metadata_list: List[SequenceGroupMetadata] = []
         self.input_data = ModelInputForCPUBuilder.ModelInputData(
             self.runner.model_config.uses_mrope)
-        self.att_metadata_builder.prepare()
+        # self.att_metadata_builder.prepare()
 
     def add_seq_group(self, seq_group_metadata: SequenceGroupMetadata):
         self.seq_group_metadata_list.append(seq_group_metadata)
@@ -199,8 +204,8 @@ class ModelInputForCPUBuilder(ModelRunnerInputBuilderBase[ModelInputForCPU]):
             multi_modal_kwargs = MultiModalKwargs.batch(
                 input_data.multi_modal_inputs_list)
 
-        attn_metadata = self.att_metadata_builder.build(
-            input_data.seq_lens, input_data.query_lens, -1, -1)
+        # attn_metadata = self.att_metadata_builder.build(
+        #     input_data.seq_lens, input_data.query_lens, -1, -1)
 
         is_prompt = (self.seq_group_metadata_list[0].is_prompt
                      if self.seq_group_metadata_list else None)
@@ -215,12 +220,20 @@ class ModelInputForCPUBuilder(ModelRunnerInputBuilderBase[ModelInputForCPU]):
             lora_mapping = self._prepare_lora_input(
                 self.seq_group_metadata_list, is_prompt)
 
+        if is_prompt:
+            xft_seq_ids = self.model.set_input_cb(input_data.xft_input_tokens, None, input_data.xft_max_lens).tolist()
+            for i in range(len(xft_seq_ids)):
+                seq_id = list(self.seq_group_metadata_list[i].seq_data.keys())[0]
+                self.seq_group_metadata_list[i].seq_data[seq_id].xft_ids = xft_seq_ids[i]
+        else:
+            self.model.set_input_cb(input_tokens.unsqueeze(1), input_data.xft_seq_ids ,None)
+
         return self.model_input_cls(input_tokens=input_tokens,
                                     input_positions=input_positions,
                                     token_type_ids=token_type_ids,
                                     seq_lens=input_data.seq_lens,
                                     query_lens=input_data.query_lens,
-                                    attn_metadata=attn_metadata,
+                                    attn_metadata=None,
                                     multi_modal_kwargs=multi_modal_kwargs,
                                     lora_mapping=lora_mapping,
                                     lora_requests=lora_requests)
@@ -246,6 +259,7 @@ class ModelInputForCPUBuilder(ModelRunnerInputBuilderBase[ModelInputForCPU]):
         """
         Compute decode input tokens, positions, block table and slot mapping.
         """
+        data.xft_seq_ids.append(seq_data.xft_ids)
         block_size = self.runner.block_size
 
         block_table = seq_group_metadata.block_tables[seq_id]
@@ -259,7 +273,7 @@ class ModelInputForCPUBuilder(ModelRunnerInputBuilderBase[ModelInputForCPU]):
         slot = block_number * block_size + block_offset
 
         # For paged_attention kernel
-        if self.runner.sliding_window:
+        if False and self.runner.sliding_window:
             start_idx = max(0, seq_len - self.runner.sliding_window)
             start_block = start_idx // block_size
             start_idx = start_block * block_size
@@ -302,6 +316,8 @@ class ModelInputForCPUBuilder(ModelRunnerInputBuilderBase[ModelInputForCPU]):
         context_len = seq_data.get_num_computed_tokens()
         seq_len = min(seq_len, context_len + token_chunk_size)
 
+        data.xft_max_lens.append(seq_group_metadata.sampling_params.max_tokens + seq_len)
+
         # For prefix caching
         prefix_cache_block_num = len(seq_group_metadata.computed_block_nums)
         if prefix_cache_block_num > 0:
@@ -330,7 +346,7 @@ class ModelInputForCPUBuilder(ModelRunnerInputBuilderBase[ModelInputForCPU]):
 
         # For encoder-only models, the block_table is None,
         # and there is no need to initialize the slot_mapping.
-        if block_table is not None:
+        if False and block_table is not None:
             slot_mapping = [_PAD_SLOT_ID] * len(token_positions)
             for i, pos in enumerate(token_positions):
                 block_number = block_table[pos // block_size]
@@ -347,6 +363,7 @@ class ModelInputForCPUBuilder(ModelRunnerInputBuilderBase[ModelInputForCPU]):
 
         # Update fields
         data.input_tokens.extend(tokens)
+        data.xft_seq_ids.append(tokens)
         data.num_prefills += 1
         data.num_prefill_tokens += len(tokens)
         data.query_lens.append(len(tokens))
@@ -456,14 +473,14 @@ class CPUModelRunnerBase(ModelRunnerBase[TModelInputForCPU]):
         self.device = self.device_config.device
         self.pin_memory = False
 
-        self.kv_cache_dtype = kv_cache_dtype
+        self.kv_cache_dtype = vllm_config.cache_config.cache_dtype
         self.sliding_window = model_config.get_sliding_window()
         self.block_size = cache_config.block_size
         num_attn_heads = self.model_config.get_num_attention_heads(
             self.parallel_config)
         needs_attn_backend = (num_attn_heads != 0
                               or self.model_config.is_attention_free)
-        self.attn_backend = get_attn_backend(
+        self.attn_backend =  None if True else get_attn_backend(
             self.model_config.get_head_size(),
             self.model_config.dtype,
             self.kv_cache_dtype,
@@ -478,7 +495,8 @@ class CPUModelRunnerBase(ModelRunnerBase[TModelInputForCPU]):
         self.mm_registry.init_mm_limits_per_prompt(self.model_config)
 
         # Lazy initialization.
-        self.model: nn.Module  # Set after init_Model
+        self.model: xfastertransformer.AutoModel  # Set after init_Model
+        self.model_sampler:nn.Module
         # Set after load_model.
         self.lora_manager: Optional[LRUCacheWorkerLoRAManager] = None
 
@@ -487,6 +505,17 @@ class CPUModelRunnerBase(ModelRunnerBase[TModelInputForCPU]):
             self.builder = self._builder_cls(weakref.proxy(self))
 
     def load_model(self) -> None:
+        logger.info(
+            f"Loading xft model {self.vllm_config.model_config.model},"
+            f"dtype = {self.vllm_config.model_config.dtype}, "
+            f"KV cache dtype = {self.kv_cache_dtype}"
+        )
+        self.model = xfastertransformer.AutoModel.from_pretrained(
+            self.model_config.model, self.model_config.dtype, self.kv_cache_dtype
+        )
+        self.model_sampler = get_sampler()
+        return
+
         self.model = get_model(vllm_config=self.vllm_config)
 
         if self.lora_config:
@@ -539,7 +568,7 @@ class CPUModelRunnerBase(ModelRunnerBase[TModelInputForCPU]):
     # sampler property will be used by spec_decode_worker
     @property
     def sampler(self):
-        return self.model.sampler
+        return self.model_sampler
 
     @property
     def vocab_size(self) -> int:
@@ -619,11 +648,11 @@ class CPUModelRunner(CPUModelRunnerBase[ModelInputForCPUWithSamplingMetadata]):
                                    virtual_engine=virtual_engine,
                                    is_prompt=is_prompt)
 
-    @torch.no_grad()
+    # @torch.no_grad()
     def execute_model(
         self,
         model_input: ModelInputForCPUWithSamplingMetadata,
-        kv_caches: List[torch.Tensor],
+        kv_caches: Optional[List[torch.Tensor]],
         intermediate_tensors: Optional[IntermediateTensors] = None,
         num_steps: int = 1,
         previous_hidden_states: Optional[torch.Tensor] = None,
@@ -649,32 +678,31 @@ class CPUModelRunner(CPUModelRunnerBase[ModelInputForCPUWithSamplingMetadata]):
             execute_model_kwargs.update(
                 {"previous_hidden_states": previous_hidden_states})
 
-        with set_forward_context(model_input.attn_metadata, self.vllm_config,
-                                 model_input.virtual_engine):
-            hidden_states = model_executable(
-                input_ids=model_input.input_tokens,
-                positions=model_input.input_positions,
-                kv_caches=kv_caches,
-                attn_metadata=model_input.attn_metadata,
-                intermediate_tensors=intermediate_tensors,
-                **execute_model_kwargs,
-                **multimodal_kwargs,
-            )
+        # with set_forward_context(model_input.attn_metadata, self.vllm_config,
+        #                          model_input.virtual_engine):
+        #     hidden_states = model_executable(
+        #         input_ids=model_input.input_tokens,
+        #         positions=model_input.input_positions,
+        #         kv_caches=kv_caches,
+        #         attn_metadata=model_input.attn_metadata,
+        #         intermediate_tensors=intermediate_tensors,
+        #         **execute_model_kwargs,
+        #         **multimodal_kwargs,
+        #     )
 
         # Compute the logits.
-        logits = self.model.compute_logits(hidden_states,
-                                           model_input.sampling_metadata)
+        logits = self.model.forward_cb()
 
         # Only perform sampling in the driver worker.
         if not self.is_driver_worker:
             return []
 
         # Sample the next token.
-        output = self.model.sample(
+        output = self.sampler(
             logits=logits,
             sampling_metadata=model_input.sampling_metadata,
         )
-        if self.return_hidden_states:
+        if self.return_hidden_states and False:
             # we only need to pass hidden states of most recent token
             if model_input.is_prompt:
                 output.prefill_hidden_states = hidden_states
@@ -683,3 +711,8 @@ class CPUModelRunner(CPUModelRunnerBase[ModelInputForCPUWithSamplingMetadata]):
 
     def generate_proposals(self, *args, **kwargs):
         return self.model.generate_proposals(*args, **kwargs)
+
+    def free_xft_cache(self, xft_seq_ids:List[int]) -> bool:
+        return self.model.free_seqs(
+            torch.tensor(xft_seq_ids, dtype=torch.long, device=self.device)
+        )

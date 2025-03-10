@@ -21,6 +21,7 @@ class Executor(ExecutorBase):
     @staticmethod
     def get_class(vllm_config: VllmConfig) -> Type["Executor"]:
         executor_class: Type[Executor]
+        return UniProcExecutor
         parallel_config = vllm_config.parallel_config
         distributed_executor_backend = (
             parallel_config.distributed_executor_backend)

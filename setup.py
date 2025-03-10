@@ -35,6 +35,7 @@ logger = logging.getLogger(__name__)
 envs = load_module_from_path('envs', os.path.join(ROOT_DIR, 'vllm', 'envs.py'))
 
 VLLM_TARGET_DEVICE = envs.VLLM_TARGET_DEVICE
+VLLM_TARGET_DEVICE = "cpu"
 
 if sys.platform.startswith("darwin") and VLLM_TARGET_DEVICE != "cpu":
     logger.warning(
@@ -500,6 +501,7 @@ def get_gaudi_sw_version():
 
 def get_vllm_version() -> str:
     version = get_version(write_to="vllm/_version.py")
+    return version
     sep = "+" if "+" not in version else "."  # dev versions might contain +
 
     if _no_device():
@@ -627,6 +629,7 @@ package_data = {
 
 if _no_device():
     ext_modules = []
+ext_modules = []
 
 if not ext_modules:
     cmdclass = {}

@@ -176,6 +176,8 @@ class SequenceData(msgspec.Struct,
     # It is used to compute mrope_position_ids.
     _mrope_position_delta: Optional[int] = None
 
+    xft_ids: int = -1
+
     @staticmethod
     def from_prompt_token_counts(
             *token_counts: Tuple[int, int]) -> "SequenceData":

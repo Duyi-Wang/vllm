@@ -123,7 +123,7 @@ class CpuPlatform(Platform):
 
         # Intel OpenMP setting
         ld_prealod_str = os.getenv("LD_PRELOAD", "")
-        if "libiomp5.so" in ld_prealod_str:
+        if "libiomp5.so" in ld_prealod_str and False:
             # The time(milliseconds) that a thread should wait after
             # completing the execution of a parallel region, before sleeping.
             os.environ['KMP_BLOCKTIME'] = "1"

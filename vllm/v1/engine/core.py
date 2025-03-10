@@ -89,6 +89,7 @@ class EngineCore:
 
     def _initialize_kv_caches(self,
                               vllm_config: VllmConfig) -> Tuple[int, int]:
+        return 0, 0
         start = time.time()
 
         # Get all kv cache needed by the model

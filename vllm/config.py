@@ -301,7 +301,13 @@ class ModelConfig:
         if self.enable_sleep_mode and not current_platform.is_cuda():
             raise ValueError("Sleep mode is only supported on CUDA devices.")
 
-        hf_config = get_config(self.model, trust_remote_code, revision,
+        import os
+        if not os.path.exists(model):
+            raise RuntimeError(f"Path of xFasterTransformer model:{model} doesn't exists.")
+        if not os.path.exists(tokenizer):
+            raise RuntimeError(f"Path of tokenizer:{tokenizer} doesn't exists.")
+
+        hf_config = get_config(self.tokenizer, trust_remote_code, revision,
                                code_revision, config_format)
 
         if hf_overrides_kw:
@@ -317,7 +323,7 @@ class ModelConfig:
         self.encoder_config = self._get_encoder_config()
         self.hf_image_processor_config = get_hf_image_processor_config(
             self.model, revision)
-        self.dtype = _get_and_verify_dtype(self.hf_text_config, dtype)
+        self.dtype = _get_and_verify_xft_dtype(dtype)
         self.use_async_output_proc = use_async_output_proc
         self.mm_processor_kwargs = mm_processor_kwargs
         self.disable_mm_preprocessor_cache = disable_mm_preprocessor_cache
@@ -918,7 +924,7 @@ class ModelConfig:
     def try_get_generation_config(self) -> Dict[str, Any]:
         if self.generation_config is None or self.generation_config == "auto":
             config = try_get_generation_config(
-                self.model,
+                self.tokenizer,
                 trust_remote_code=self.trust_remote_code,
                 revision=self.revision,
             )
@@ -1090,6 +1096,11 @@ class CacheConfig:
                 f"{self.gpu_memory_utilization}.")
 
     def _verify_cache_dtype(self) -> None:
+        if self.cache_dtype == "auto":
+            self.cache_dtype = "fp16"
+        logger.info(f"Using {self.cache_dtype} data type to store kv cache.")
+        return
+
         if self.cache_dtype == "auto":
             pass
         elif self.cache_dtype in ("fp8", "fp8_e4m3", "fp8_e5m2"):
@@ -1652,6 +1663,10 @@ class DeviceConfig:
         return hash_str
 
     def __init__(self, device: str = "auto") -> None:
+        self.device = torch.device("cpu")
+        self.device_type = "cpu"
+        return
+
         if device == "auto":
             # Automated device type detection
             from vllm.platforms import current_platform
@@ -2367,6 +2382,59 @@ _STR_DTYPE_TO_TORCH_DTYPE = {
 
 _ROCM_NOT_SUPPORTED_DTYPE: List[str] = []  #
 
+_STR_DTYPE_TO_XFT_DTYPE = {
+    "half": "bf16",
+    "float16": "fp16",
+    "bfloat16": "bf16",
+}
+
+_TORCH_DTYPE_TO_XFT_DTYPE = {
+    torch.float16: "fp16",
+    torch.bfloat16: "bf16",
+}
+
+_XFT_NOT_SUPPORT_DTYPE = ["float32", "float"]
+
+_XFT_DTYPE_LIST = [
+    "fp16",
+    "bf16",
+    "int8",
+    "w8a8",
+    "int4",
+    "nf4",
+    "bf16_fp16",
+    "bf16_int8",
+    "bf16_w8a8",
+    "bf16_int4",
+    "bf16_nf4",
+    "w8a8_int8",
+    "w8a8_int4",
+    "w8a8_nf4",
+    "fp8_e4m3",
+]
+
+def _get_and_verify_xft_dtype(
+    dtype: Union[str, torch.dtype],
+) -> str:
+    if isinstance(dtype, str):
+        dtype = dtype.lower()
+        if dtype == "auto":
+            return "bf16"
+        elif dtype in _XFT_DTYPE_LIST:
+            return dtype
+        elif dtype in _STR_DTYPE_TO_XFT_DTYPE:
+            return _STR_DTYPE_TO_XFT_DTYPE[dtype]
+        elif dtype in _XFT_NOT_SUPPORT_DTYPE:
+            logger.warning("{dtype} is not supported on CPU, casting to bfloat16.")
+            return "bf16"
+        else:
+            raise ValueError(f"Unknown dtype: {dtype}")
+    
+    if isinstance(dtype, torch.dtype):
+        if dtype in _TORCH_DTYPE_TO_XFT_DTYPE:
+            return _TORCH_DTYPE_TO_XFT_DTYPE[dtype]
+        else:
+            raise ValueError(f"Unknown dtype: {dtype}")
 
 def _get_and_verify_dtype(
     config: PretrainedConfig,

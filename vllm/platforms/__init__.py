@@ -170,6 +170,7 @@ builtin_platform_plugins = {
 
 
 def resolve_current_platform_cls_qualname() -> str:
+    return "vllm.platforms.cpu.CpuPlatform"
     platform_plugins = load_plugins_by_group('vllm.platform_plugins')
 
     activated_plugins = []

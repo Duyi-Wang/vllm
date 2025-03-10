@@ -259,6 +259,9 @@ class ExecutorBase(ABC):
         exception."""
         self.check_health()
 
+    def free_xft_cache(self, xft_seq_ids:List[int]) -> bool:
+        return self.collective_rpc("free_xft_cache", args=(xft_seq_ids))
+
 
 class DistributedExecutorBase(ExecutorBase):
     """Abstract superclass of distributed executor implementations."""

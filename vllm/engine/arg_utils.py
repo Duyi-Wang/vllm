@@ -84,6 +84,29 @@ def nullable_kvs(val: str) -> Optional[Mapping[str, int]]:
 
     return out_dict
 
+DTYPE_LIST = [
+    "auto",
+    "half",
+    "float16",
+    "bfloat16",
+    "float",
+    "float32",
+    "fp16",
+    "bf16",
+    "int8",
+    "w8a8",
+    "int4",
+    "nf4",
+    "bf16_fp16",
+    "bf16_int8",
+    "bf16_w8a8",
+    "bf16_int4",
+    "bf16_nf4",
+    "w8a8_int8",
+    "w8a8_int4",
+    "w8a8_nf4",
+    "fp8_e4m3",
+]
 
 @dataclass
 class EngineArgs:
@@ -346,9 +369,7 @@ class EngineArgs:
             '--dtype',
             type=str,
             default=EngineArgs.dtype,
-            choices=[
-                'auto', 'half', 'float16', 'bfloat16', 'float', 'float32'
-            ],
+            choices=DTYPE_LIST,
             help='Data type for model weights and activations.\n\n'
             '* "auto" will use FP16 precision for FP32 and FP16 models, and '
             'BF16 precision for BF16 models.\n'
@@ -360,7 +381,7 @@ class EngineArgs:
         parser.add_argument(
             '--kv-cache-dtype',
             type=str,
-            choices=['auto', 'fp8', 'fp8_e5m2', 'fp8_e4m3'],
+            choices=['auto', 'fp8', 'fp8_e5m2', 'fp8_e4m3', 'fp16', 'bf16', 'int8'],
             default=EngineArgs.kv_cache_dtype,
             help='Data type for kv cache storage. If "auto", will use model '
             'data type. CUDA 11.8+ supports fp8 (=fp8_e4m3) and fp8_e5m2. '

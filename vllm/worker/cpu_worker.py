@@ -115,8 +115,8 @@ class CPUCacheEngine:
 class CPUWorker(LocalOrDistributedWorkerBase):
     """A worker class that executes (a partition of) the model on a CPU socket.
 
-    Each worker is associated with a single CPU socket. The worker is 
-    responsible for maintaining the KV cache and executing the model on the 
+    Each worker is associated with a single CPU socket. The worker is
+    responsible for maintaining the KV cache and executing the model on the
     CPU. In case of distributed inference, each worker is assigned a partition
     of the model.
     """
@@ -178,7 +178,7 @@ class CPUWorker(LocalOrDistributedWorkerBase):
             self.model_runner = model_runner_cls(self.model_runner)
         # Uninitialized cache engine. Will be initialized by
         # initialize_cache.
-        self.cache_engine: List[CPUCacheEngine]
+        self.cache_engine: Optional[List[CPUCacheEngine]] = None
         # Initialize cpu_cache as pooling models don't initialize kv_caches
         self.cpu_cache: Optional[List[List[torch.Tensor]]] = None
 
@@ -209,6 +209,8 @@ class CPUWorker(LocalOrDistributedWorkerBase):
         self.profiler.stop()
 
     def init_device(self) -> None:
+        self.device = torch.device("cpu")
+        return
         if self.local_omp_cpuid != "all":
             ret = torch.ops._C_utils.init_cpu_threads_env(self.local_omp_cpuid)
             if ret:
@@ -339,6 +341,7 @@ class CPUWorker(LocalOrDistributedWorkerBase):
         self,
         worker_input: WorkerInput,
     ) -> None:
+        return
         if (worker_input.blocks_to_copy is not None
                 and worker_input.blocks_to_copy.numel() > 0):
             self.cache_engine[worker_input.virtual_engine].copy(
@@ -350,14 +353,14 @@ class CPUWorker(LocalOrDistributedWorkerBase):
         assert execute_model_req is not None
         virtual_engine: int = execute_model_req.virtual_engine
         num_seq_groups: int = len(execute_model_req.seq_group_metadata_list)
-        blocks_to_copy = torch.tensor(execute_model_req.blocks_to_copy,
-                                      device="cpu",
-                                      dtype=torch.int64).view(-1, 2)
+        # blocks_to_copy = torch.tensor(execute_model_req.blocks_to_copy,
+        #                               device="cpu",
+        #                               dtype=torch.int64).view(-1, 2)
         assert len(execute_model_req.blocks_to_swap_in) == 0
         assert len(execute_model_req.blocks_to_swap_out) == 0
         return WorkerInput(
             num_seq_groups=num_seq_groups,
-            blocks_to_copy=blocks_to_copy,
+            blocks_to_copy=None,
             virtual_engine=virtual_engine,
         )
 
@@ -387,3 +390,6 @@ class CPUWorker(LocalOrDistributedWorkerBase):
         return CPUCacheEngine.get_cache_block_size(
             self.cache_config.block_size, self.cache_config.cache_dtype,
             self.model_config, self.parallel_config)
+
+    def free_xft_cache(self, xft_seq_ids:List[int]) -> bool:
+        return self.model_runner.free_xft_cache(xft_seq_ids)
