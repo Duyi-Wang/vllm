@@ -16,8 +16,6 @@ from tqdm import tqdm
 
 from vllm import LLM, SamplingParams
 from vllm.engine.arg_utils import EngineArgs
-from vllm.inputs import PromptType
-from vllm.sampling_params import BeamSearchParams
 from vllm.utils import FlexibleArgumentParser
 
 
@@ -58,7 +56,7 @@ def main(args: argparse.Namespace):
     dummy_prompt_token_ids = np.random.randint(10000,
                                                size=(args.batch_size,
                                                      args.input_len))
-    dummy_prompts: list[PromptType] = [{
+    dummy_prompts = [{
         "prompt_token_ids": batch
     } for batch in dummy_prompt_token_ids.tolist()]
 
@@ -68,14 +66,8 @@ def main(args: argparse.Namespace):
                          sampling_params=sampling_params,
                          use_tqdm=False)
         else:
-            llm.beam_search(
-                dummy_prompts,
-                BeamSearchParams(
-                    beam_width=args.n,
-                    max_tokens=args.output_len,
-                    ignore_eos=True,
-                ),
-            )
+            raise NotImplementedError(
+                "Beam search is not supported in this benchmark.")
 
     def run_to_completion(profile_dir: Optional[str] = None):
         if profile_dir:
